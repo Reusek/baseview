@@ -1,7 +1,8 @@
 use std::marker::PhantomData;
+use std::os::raw;
 
 use raw_window_handle::{
-    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
+    HandleError, HasRawDisplayHandle, HasRawWindowHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle
 };
 
 use crate::event::{Event, EventStatus};
@@ -38,11 +39,11 @@ impl WindowHandle {
     }
 }
 
-unsafe impl HasRawWindowHandle for WindowHandle {
-    fn raw_window_handle(&self) -> RawWindowHandle {
-        self.window_handle.raw_window_handle()
-    }
-}
+// unsafe impl HasRawWindowHandle for WindowHandle {
+//     fn raw_window_handle(&self) -> RawWindowHandle {
+//         self.window_handle.raw_window_handle()
+//     }
+// }
 
 pub trait WindowHandler {
     fn on_frame(&mut self, window: &mut Window);
@@ -54,6 +55,17 @@ pub struct Window<'a> {
 
     // so that Window is !Send on all platforms
     phantom: PhantomData<*mut ()>,
+}
+
+impl HasWindowHandle for Window<'_> {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let raw_window_handle = self.window.raw_window_handle()?;
+        Ok(unsafe {
+            raw_window_handle::WindowHandle::borrow_raw(raw_window_handle)
+        })
+    }
 }
 
 impl<'a> Window<'a> {
@@ -118,14 +130,14 @@ impl<'a> Window<'a> {
     }
 }
 
-unsafe impl<'a> HasRawWindowHandle for Window<'a> {
-    fn raw_window_handle(&self) -> RawWindowHandle {
-        self.window.raw_window_handle()
-    }
-}
+// unsafe impl<'a> HasRawWindowHandle for Window<'a> {
+//     fn raw_window_handle(&self) -> Result<RawWindowHandle, HandleError> {
+//         self.window.raw_window_handle()
+//     }
+// }
 
 unsafe impl<'a> HasRawDisplayHandle for Window<'a> {
-    fn raw_display_handle(&self) -> RawDisplayHandle {
+    fn raw_display_handle(&self) -> Result<RawDisplayHandle, HandleError> {
         self.window.raw_display_handle()
     }
 }

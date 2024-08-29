@@ -1,14 +1,15 @@
 use std::cell::Cell;
 use std::error::Error;
-use std::ffi::c_void;
+use std::ffi::{c_ulong, c_void};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
 use raw_window_handle::{
-    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle, XlibDisplayHandle,
-    XlibWindowHandle,
+    HandleError, HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
+    XlibDisplayHandle, XlibWindowHandle,
 };
 
 use x11rb::connection::Connection;
@@ -52,14 +53,16 @@ impl WindowHandle {
 }
 
 unsafe impl HasRawWindowHandle for WindowHandle {
-    fn raw_window_handle(&self) -> RawWindowHandle {
+    fn raw_window_handle(&self) -> Result<RawWindowHandle, HandleError> {
         if let Some(raw_window_handle) = self.raw_window_handle {
             if self.is_open.load(Ordering::Relaxed) {
-                return raw_window_handle;
+                return Ok(raw_window_handle);
             }
         }
 
-        RawWindowHandle::Xlib(XlibWindowHandle::empty())
+        let handle = XlibWindowHandle::new(0);
+
+        Ok(RawWindowHandle::Xlib(handle))
     }
 }
 
@@ -127,8 +130,8 @@ impl<'a> Window<'a> {
     {
         // Convert parent into something that X understands
         let parent_id = match parent.raw_window_handle() {
-            RawWindowHandle::Xlib(h) => h.window as u32,
-            RawWindowHandle::Xcb(h) => h.window,
+            Ok(RawWindowHandle::Xlib(h)) => h.window as u32,
+            Ok(RawWindowHandle::Xcb(h)) => h.window.into(),
             h => panic!("unsupported parent handle type {:?}", h),
         };
 
@@ -137,11 +140,15 @@ impl<'a> Window<'a> {
         let (parent_handle, mut window_handle) = ParentHandle::new();
 
         thread::spawn(move || {
-            Self::window_thread(Some(parent_id), options, build, tx.clone(), Some(parent_handle))
-                .unwrap();
+            let a = Self::window_thread(Some(parent_id), options, build, tx.clone(), Some(parent_handle));
+            if let Err(err) = a {
+                eprintln!("Window thread panicked: {:#?}", err);
+            }
+                // .unwrap();
         });
 
-        let raw_window_handle = rx.recv().unwrap().unwrap();
+        let raw_window_handle =
+            rx.recv().expect("Failed to receive window handle tx is lost.").unwrap();
         window_handle.raw_window_handle = Some(raw_window_handle.0);
 
         window_handle
@@ -292,7 +299,8 @@ impl<'a> Window<'a> {
         // the correct dpi scaling.
         handler.on_event(&mut window, Event::Window(WindowEvent::Resized(window_info)));
 
-        let _ = tx.send(Ok(SendableRwh(window.raw_window_handle())));
+        let rawwindow = window.raw_window_handle()?;
+        let _ = tx.send(Ok(SendableRwh(rawwindow)));
 
         EventLoop::new(inner, handler, parent_handle).run()?;
 
@@ -352,25 +360,23 @@ impl<'a> Window<'a> {
 }
 
 unsafe impl<'a> HasRawWindowHandle for Window<'a> {
-    fn raw_window_handle(&self) -> RawWindowHandle {
-        let mut handle = XlibWindowHandle::empty();
+    fn raw_window_handle(&self) -> Result<RawWindowHandle, HandleError> {
+        // let mut handle = XlibWindowHandle::empty();
 
-        handle.window = self.inner.window_id.into();
+        let mut handle = XlibWindowHandle::new(self.inner.window_id as c_ulong);
         handle.visual_id = self.inner.visual_id.into();
 
-        RawWindowHandle::Xlib(handle)
+        Ok(RawWindowHandle::Xlib(handle))
     }
 }
 
 unsafe impl<'a> HasRawDisplayHandle for Window<'a> {
-    fn raw_display_handle(&self) -> RawDisplayHandle {
+    fn raw_display_handle(&self) -> Result<RawDisplayHandle, HandleError> {
         let display = self.inner.xcb_connection.dpy;
-        let mut handle = XlibDisplayHandle::empty();
+        let screen = unsafe { x11::xlib::XDefaultScreen(display) };
+        let handle = XlibDisplayHandle::new(NonNull::new(display as *mut c_void), screen);
 
-        handle.display = display as *mut c_void;
-        handle.screen = unsafe { x11::xlib::XDefaultScreen(display) };
-
-        RawDisplayHandle::Xlib(handle)
+        Ok(RawDisplayHandle::Xlib(handle))
     }
 }
 
